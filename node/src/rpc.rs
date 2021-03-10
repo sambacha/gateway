@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use compound_chain_runtime::{opaque::Block, AccountId, BlockNumber, Hash, Index};
+use gateway_runtime::{opaque::Block, AccountId, BlockNumber, Hash, Index};
 use sc_client_api::AuxStore;
 use sc_finality_grandpa::{
     FinalityProofProvider, GrandpaJustificationStream, SharedAuthoritySet, SharedVoterState,

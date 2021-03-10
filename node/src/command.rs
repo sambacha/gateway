@@ -1,7 +1,7 @@
 use crate::cli::{Cli, Subcommand};
 use crate::{chain_spec, service};
 #[cfg(feature = "runtime-benchmarks")]
-use compound_chain_runtime::Block;
+use gateway_runtime::Block;
 use sc_cli::{arg_enums::Database, ChainSpec, Role, RuntimeVersion, SubstrateCli};
 use sc_service::PartialComponents;
 
@@ -47,7 +47,7 @@ impl SubstrateCli for Cli {
     }
 
     fn native_runtime_version(_: &Box<dyn ChainSpec>) -> &'static RuntimeVersion {
-        &compound_chain_runtime::VERSION
+        &gateway_runtime::VERSION
     }
 }
 

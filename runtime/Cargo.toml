@@ -2,7 +2,7 @@
 authors = ['Compound <https://compound.finance>']
 edition = '2018'
 homepage = 'https://compound.cash'
-name = 'compound-chain-runtime'
+name = 'gateway-runtime'
 repository = 'https://github.com/compound-finance/compound-chain/'
 version = '1.0.0'
 

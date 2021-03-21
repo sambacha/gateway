@@ -1,8 +1,11 @@
+const fs = require('fs').promises;
 const repl = require('repl');
 const path = require('path');
 const { Readable } = require('stream');
 const { createReadStream } = require('fs');
 const getopts = require('getopts');
+const { ApiPromise, WsProvider } = require('@polkadot/api');
+const fetch = require('node-fetch');
 
 function matchesLine(completion, line) {
   if (completion.initial && line.startsWith(completion.initial)) {
@@ -283,11 +286,52 @@ function defineContracts(r, saddle, contractInsts) {
   });
 }
 
-function connect(chain) {
-  const wsProvider = new WsProvider(`ws://localhost:${this.wsPort}`);
-  const api = await ApiPromise.create({
+async function loadChainConfig(chain) {
+  return JSON.parse(await fs.readFile(path.join(__dirname, chain, 'chain-config.json'), 'utf8'));
+}
+
+async function loadTypes(version) {
+  return JSON.parse(await fs.readFile(path.join(__dirname, '..', 'releases', `m${Number(version)}`, 'types.json'), 'utf8'));
+}
+
+async function rpc(chain, chainConfig, section, method, params=[]) {
+  if (!chainConfig.rpc) {
+    throw new Error(`No websocket config for chain ${chain}`);
+  }
+
+  let res = await fetch(chainConfig.rpc, {
+    method: 'post',
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: `${section}_${method}`,
+      params
+    }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  let resJson = await res.json();
+
+  return resJson.result;
+}
+
+async function getRuntimeVersion(chain, chainConfig) {
+  return await rpc(chain, chainConfig, "state", "getRuntimeVersion");
+}
+
+async function connect(chain, chainConfig) {
+  if (!chainConfig.websocket) {
+    throw new Error(`No websocket config for chain ${chain}`);
+  }
+
+  let runtimeVersion = await getRuntimeVersion(chain, chainConfig);
+  let { specVersion } = runtimeVersion;
+  let types = await loadTypes(specVersion); // TODO: Pull release
+
+  const wsProvider = new WsProvider(chainConfig.websocket);
+  let api = await ApiPromise.create({
     provider: wsProvider,
-    types: await loadTypes(this.ctx)
+    types
   });
 
   return {
@@ -301,7 +345,7 @@ async function startConsole(input, chain, trace) {
   let {contracts, contractInsts} = await getContracts({});
 
   console.info(`Gateway console on chain ${chain}`);
-  console.info(`Deployed ${network} contracts`);
+  // console.info(`Deployed ${network} contracts`);
 
   Object.entries(contracts).forEach(([contract, deployed]) => {
     if (deployed) {
@@ -323,9 +367,10 @@ async function startConsole(input, chain, trace) {
 
   // defineCommands(r, saddle, network, contracts);
 
-  let connection = await connect(chain);
+  let chainConfig = await loadChainConfig(chain);
+  let connection = await connect(chain, chainConfig);
 
-  Object.entires(connection).forEach(([key, value]) => {
+  Object.entries(connection).forEach(([key, value]) => {
     Object.defineProperty(r.context, key, {
       configurable: false,
       enumerable: typeof(value) !== 'function',

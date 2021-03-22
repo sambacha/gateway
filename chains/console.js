@@ -4,8 +4,9 @@ const path = require('path');
 const { Readable } = require('stream');
 const { createReadStream } = require('fs');
 const getopts = require('getopts');
-const { ApiPromise, WsProvider } = require('@polkadot/api');
+const { ApiPromise, WsProvider, Keyring } = require('@polkadot/api');
 const fetch = require('node-fetch');
+const { getSaddle, describeProvider } = require('eth-saddle');
 
 function matchesLine(completion, line) {
   if (completion.initial && line.startsWith(completion.initial)) {
@@ -98,181 +99,87 @@ function lowerCase(str) {
   }
 }
 
-async function wrapError(p, that) {
+async function wrapError(fn, r) {
   try {
-    return await p;
+    return await fn;
   } catch (err) {
     console.error(`Error: ${err}`);
   } finally {
-    that.displayPrompt();
+    r.displayPrompt();
   }
 }
 
 async function getContracts(saddle) {
-  // let contracts = await saddle.listContracts();
-  // let contractInsts = await Object.entries(contracts).reduce(async (acc, [contract, address]) => {
-  //   if (address) {
-  //     return {
-  //       ... await acc,
-  //       [contract]: await saddle.getContractAt(contract, address)
-  //     };
-  //   } else {
-  //     return await acc;
-  //   }
-  // }, <Promise<{[name: string]: Contract}>>{});
+  let contracts = await saddle.listContracts();
+  let contractInsts = await Object.entries(contracts).reduce(async (acc, [contract, address]) => {
+    if (address) {
+      return {
+        ... await acc,
+        [contract]: await saddle.getContractAt(contract, address)
+      };
+    } else {
+      return await acc;
+    }
+  }, {});
 
-  // return {
-  //   contracts,
-  //   contractInsts
-  // }
   return {
-    contracts: [],
-    contractInsts: []
+    contracts,
+    contractInsts
   };
 }
 
-function defineCommands(r, saddle, network, contracts) {
-  r.defineCommand('deploy', {
-    help: 'Deploy a given contract',
-    action(...args) {
-      this.clearBufferedCommand();
-      let that = this;
+function defineAction(r, fn) {
+  return async (name) => {
+    r.clearBufferedCommand();
+    await wrapError(fn(), r);
+  };
+}
 
-      getCli().parse(`deploy -n ${network} ${args.join(" ")}`, function (err, argv, output) {
-        if (err) {
-          console.error(`Error: ${err}`);
-        } else {
-          console.log(output);
-          wrapError(argv.deployResult, that).then((res) => {
-            if (res) {
-              getContracts(saddle).then(({contracts, contractInsts}) => {
-                r.completer = getCompletions(r.originalCompleter, contracts);
-                defineContracts(r, saddle, contractInsts);
-                defineCommands(r, saddle, network, contracts);
-
-                that.displayPrompt();
-              });
-            }
-          });
-        }
+function defineCommands(r, { api, keyring }, saddle, network, contracts) {
+  r.defineCommand('validators', {
+    help: 'Show current validators',
+    action: defineAction(r, async () => {
+      let validators = await api.query.cash.validators.entries();
+      validators.forEach(([substrateId, validatorKeys]) => {
+        let key = toSS58(keyring, substrateId.toHuman()[0]);
+        let value = Object.entries(validatorKeys.unwrap().toJSON()).map(([k, v]) =>
+          `\t\t${k}=${v}`).join("\n");
+        console.log(`\t${key}:\n${value}\n`);
       });
-    }
+    })
   });
 
-  r.defineCommand('verify', {
-    help: 'Verify a given contract on Etherscan',
-    action(...args) {
-      this.clearBufferedCommand();
-      let that = this;
-
-      getCli().parse(`verify -n ${network} ${args.join(" ")}`, function (err, argv, output) {
-        if (err) {
-          console.error(`Error: ${err}`);
-        } else {
-          console.log(output);
-          wrapError(argv.verifyResult, that);
-        }
-      });
-    }
+  r.defineCommand('block', {
+    help: 'Show current gateway block',
+    action: defineAction(r, async () => {
+      const blockHash = await api.rpc.chain.getBlockHash();
+      const signedBlock = await api.rpc.chain.getBlock(blockHash);
+      let header = signedBlock.block.header;
+      console.log(`#${header.number}`);
+    })
   });
 
-  r.defineCommand('match', {
-    help: 'Matches a given contract to an Ethereum deploy contract',
-    action(...args) {
-      this.clearBufferedCommand();
-      let that = this;
-
-      getCli().parse(`match -n ${network} ${args.join(" ")}`, function (err, argv, output) {
-        if (err) {
-          console.error(`Error: ${err}`);
-        } else {
-          console.log(output);
-          wrapError(argv.matchResult, that);
-        }
-      });
-    }
-  });
-
-  r.defineCommand('compile', {
-    help: 'Re-compile contracts',
-    action(name) {
-      this.clearBufferedCommand();
-      let that = this;
-
-      getCli().parse(`compile ${name}`, function (err, argv, output) {
-        if (err) {
-          console.error(`Error: ${err}`);
-        } else {
-          console.log(output);
-          wrapError(argv.compileResult, that).then((res) => {
-            if (res) {
-              getContracts(saddle).then(({contracts, contractInsts}) => {
-                r.completer = getCompletions(r.originalCompleter, contracts);
-                defineContracts(r, saddle, contractInsts);
-                defineCommands(r, saddle, network, contracts);
-
-                that.displayPrompt();
-              });
-            }
-          });
-        }
-      });
-    }
-  });
-
-  r.defineCommand('contracts', {
-    help: 'Lists known contracts',
-    action(name) {
-      this.clearBufferedCommand();
-      let that = this;
-
-      getCli().parse(`contracts ${name}`, function (err, argv, output) {
-        if (err) {
-          console.error(`Error: ${err}`);
-        } else {
-          console.log(output);
-          wrapError(argv.contractsResult, that);
-        }
-      });
-    }
-  });
-
-  r.defineCommand('network', {
-    help: 'Show given network',
-    action(name) {
-      this.clearBufferedCommand();
+  r.defineCommand('eth_network', {
+    help: 'Show given Ethereum network',
+    action: defineAction(r, async () => {
       console.log(`Network: ${network}`);
-      this.displayPrompt();
-    }
+    })
   });
 
-  r.defineCommand('provider', {
-    help: 'Show given provider',
-    action(name) {
-      this.clearBufferedCommand();
-      console.log(`Provider: ${describeProvider(saddle.web3.currentProvider)}`);
-      this.displayPrompt();
-    }
-  });
-
-  r.defineCommand('from', {
-    help: 'Show default from address',
-    action(name) {
-      this.clearBufferedCommand();
+  r.defineCommand('eth_from', {
+    help: 'Show default from Ethereum address',
+    action: defineAction(r, async () => {
       console.log(`From: ${saddle.network_config.default_account}`);
-      this.displayPrompt();
-    }
+    })
   });
 
-  r.defineCommand('deployed', {
-    help: 'Show given deployed contracts',
-    action(name) {
-      this.clearBufferedCommand();
+  r.defineCommand('eth_deployed', {
+    help: 'Show given deployed Ethereum contracts',
+    action: defineAction(r, async () => {
       Object.entries(contracts).forEach(([contract, deployed]) => {
         console.log(`${contract}: ${deployed || ""}`);
       });
-      this.displayPrompt();
-    }
+    })
   });
 }
 
@@ -319,6 +226,10 @@ async function getRuntimeVersion(chain, chainConfig) {
   return await rpc(chain, chainConfig, "state", "getRuntimeVersion");
 }
 
+function toSS58(keyring, arr) {
+  return keyring.encodeAddress(arr);
+}
+
 async function connect(chain, chainConfig) {
   if (!chainConfig.websocket) {
     throw new Error(`No websocket config for chain ${chain}`);
@@ -326,26 +237,43 @@ async function connect(chain, chainConfig) {
 
   let runtimeVersion = await getRuntimeVersion(chain, chainConfig);
   let { specVersion } = runtimeVersion;
-  let types = await loadTypes(specVersion); // TODO: Pull release
+  let typesJson = await loadTypes(specVersion);
 
   const wsProvider = new WsProvider(chainConfig.websocket);
   let api = await ApiPromise.create({
     provider: wsProvider,
-    types
+    types: typesJson
   });
+
+  let keyring = new Keyring();
+  let types = api.types;
 
   return {
     wsProvider,
-    api
+    api,
+    keyring,
+    types
   };
 }
 
+function defineKeys(r, obj) {
+  Object.entries(obj).forEach(([key, value]) => {
+    Object.defineProperty(r.context, key, {
+      configurable: false,
+      enumerable: typeof(value) !== 'function',
+      value
+    });
+  });
+}
+
 async function startConsole(input, chain, trace) {
-  // let saddle = await getSaddle(network);
-  let {contracts, contractInsts} = await getContracts({});
+  let chainConfig = await loadChainConfig(chain);
+  let connection = await connect(chain, chainConfig);
+  let network = chainConfig.eth_network;
+  let saddle = await getSaddle(network);
+  let {contracts, contractInsts} = await getContracts(saddle);
 
   console.info(`Gateway console on chain ${chain}`);
-  // console.info(`Deployed ${network} contracts`);
 
   Object.entries(contracts).forEach(([contract, deployed]) => {
     if (deployed) {
@@ -365,22 +293,17 @@ async function startConsole(input, chain, trace) {
   r.originalCompleter = r.completer;
   r.completer = getCompletions(r.completer, contracts);
 
-  // defineCommands(r, saddle, network, contracts);
+  defineCommands(r, connection, saddle, network, contracts);
 
-  let chainConfig = await loadChainConfig(chain);
-  let connection = await connect(chain, chainConfig);
-
-  Object.entries(connection).forEach(([key, value]) => {
-    Object.defineProperty(r.context, key, {
-      configurable: false,
-      enumerable: typeof(value) !== 'function',
-      value
-    });
-  });
-
-  // defineContracts(r, saddle, contractInsts);
+  defineKeys(r, { saddle });
+  defineKeys(r, connection);
+  defineContracts(r, saddle, contractInsts);
 
   process.on('uncaughtException', () => console.log('Error'));
+
+  r.on('exit', () => {
+    process.exit();
+  });
 }
 
 let input;
@@ -397,7 +320,7 @@ if (!options.chain) {
 }
 
 if (options.script) {
-  input = createReadStream(scriptArg);
+  input = createReadStream(options.script);
 } else if (options.eval) {
   let evalArg = options.eval;
   let codes = Array.isArray(evalArg) ? evalArg.map((e) => e + ';\n') : [ evalArg ];
